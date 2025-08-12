@@ -49,14 +49,7 @@ for item in response:
         # siguiendo la convencion, cualquier respuesta igual a 0,
         # es una respuesta exitosa y cualquier otra es erronea
         if result.returncode == 0:
-            try:
-                # mediante la ip, busca y guarda el nombre 
-                # del dispositivo en caso de que tenga
-                hostname_info = socket.gethostbyaddr(ip)
-                hostname = hostname_info[0]
-                print(f"✅ {name} ({ip}) ({subnet_mask}): Host en línea. Nombre del sistema:✅ {hostname}.")
-            except socket.herror:
-                print(f"✅ {name} ({ip}) ({subnet_mask}): Host en línea. Nombre del sistema:❌ No disponible.")
+            print(f"✅ {name} ({ip}): Host esta en linea.")
         else:
             print(f"❌ {name} ({ip}): Host no responde.")
     except subprocess.TimeoutExpired:
