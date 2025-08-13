@@ -5,8 +5,9 @@ import json
 import time
 import threading
 import smtplib
+import ssl 
 from email.mime.text import MIMEText
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
