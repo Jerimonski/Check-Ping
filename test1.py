@@ -13,9 +13,12 @@ app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 API_DEVICES_URL = "https://689a0d64fed141b96ba1b4fb.mockapi.io/Ip_List/ip_list"
+
 EMAIL_SENDER = "jeremy.amaru.ayaviri@alumnos.uta.cl"  
 EMAIL_PASSWORD = "21165692" 
 EMAIL_RECEIVER = "jeremy.amaru.ayaviri@alumnos.uta.cl" 
+SMTP_SERVER = "smtp.gmail.com" 
+SMTP_PORT = 465
 
 devices = []
 
@@ -32,7 +35,7 @@ def send_email_notification(subject, body):
         msg['From'] = EMAIL_SENDER
         msg['To'] = EMAIL_RECEIVER
 
-        with smtplib.SMTP_SSL('jeremy.amaru.ayaviri@alumnos.uta.cl', 465) as smtp:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=ssl.create_default_context()) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
             smtp.send_message(msg)
         print(f"Correo enviado: {subject}")
@@ -76,7 +79,7 @@ def check_status_and_notify():
                 new_status = "DOWN"
 
             if old_status == "UP" and new_status == "DOWN":
-                subject = f"⚠️ ALERTA: Dispositivo {device['name']} CAÍDO"
+                subject = f"⚠️ Dispositivo {device['name']} CAÍDO"
                 body = f"El dispositivo {device['name']} con IP {device['ip']} ha dejado de responder."
                 send_email_notification(subject, body)
             
@@ -92,7 +95,6 @@ def index():
 
 @socketio.on('connect')
 def handle_connect():
-    """Se ejecuta cuando un cliente se conecta."""
     print('Cliente conectado:', request.sid)
     if devices:
         emit('status_update', {'devices': devices}, room=request.sid)
