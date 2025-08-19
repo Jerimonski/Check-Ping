@@ -1,11 +1,10 @@
+import asyncio
 import subprocess 
 import platform
 import requests
-import json
-import time
-import threading
 import base64
 import os
+from datetime import datetime
 from email.mime.text import MIMEText
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -13,6 +12,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -24,8 +24,6 @@ EMAIL_SENDER = "jeremy.amaru.ayaviri@alumnos.uta.cl"
 EMAIL_RECEIVER = "jeremy.amaru.ayaviri@alumnos.uta.cl"
 
 devices = []
-offDevices = []
-
 gmail_service = None 
 
 PING_COMMAND = ["ping"]
@@ -35,6 +33,11 @@ else:
     PING_COMMAND.extend(["-c", "1"])
 
 def get_gmail_service():
+    """
+    Inicializa el servicio de Gmail para enviar correos.
+    Verifica si las credenciales existen en 'token.json' y las refresca si es necesario.
+    Si no existen, inicia el flujo de autorización.
+    """
     creds = None
     if os.path.exists('token.json'):
         creds = Credentials.from_authorized_user_file('token.json', SCOPES)
@@ -51,7 +54,6 @@ def get_gmail_service():
     return build('gmail', 'v1', credentials=creds)
 
 def create_message(sender, to, subject, message_text):
-    """Crea un mensaje para el email."""
     message = MIMEText(message_text)
     message['to'] = to
     message['from'] = sender
@@ -59,9 +61,6 @@ def create_message(sender, to, subject, message_text):
     return {'raw': base64.urlsafe_b64encode(message.as_bytes()).decode()}
 
 def send_email_notification(subject, body):
-    """
-    Envía un correo electrónico de notificación usando el servicio de la API de Gmail.
-    """
     global gmail_service
     if not gmail_service:
         print("Error: El servicio de Gmail no está inicializado.")
@@ -77,8 +76,7 @@ def send_email_notification(subject, body):
 def send_message(service, user_id, message):
     """Envía un mensaje de email."""
     try:
-        message = (service.users().messages().send(userId=user_id, body=message)
-                   .execute())
+        message = (service.users().messages().send(userId=user_id, body=message).execute())
         print('Message Id: %s' % message['id'])
         return message
     except Exception as error:
@@ -94,60 +92,90 @@ def fetch_devices_from_api():
         devices = [{
             "name": item.get('name'),
             "ip": item.get('ip'),
-            "status": "UNKNOWN"
+            "status": "Caido",
+            "active": "Perdido/s",
+            "down_count": 0  
         } for item in data]
         
     except requests.exceptions.RequestException as e:
         print(f"Error al obtener dispositivos de la API: {e}")
 
-def check_status_and_notify():
-    while True:
-        if not devices:
-            fetch_devices_from_api()
+async def ping_device_async(device):
+    """
+    Función asíncrona para hacer un solo ping.
+    Utiliza asyncio.to_thread para no bloquear el bucle de eventos.
+    """
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            PING_COMMAND + [device['ip']], 
+            capture_output=True, 
+            text=True, 
+            timeout=3
+        )
+        return "Activo" if result.returncode == 0 else "Caido"
+    except (subprocess.TimeoutExpired, Exception):
+        return "Caido"
 
-        for device in devices:
-            old_status = device['status']
-            try:
-                result = subprocess.run(
-                    PING_COMMAND + [device['ip']],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                new_status = "UP" if result.returncode == 0 else "DOWN"
-            except (subprocess.TimeoutExpired, Exception):
-                new_status = "DOWN"
-            if old_status == "UP" and new_status == "DOWN":
-                offDevices.append(device)
-            device['status'] = new_status
-            socketio.emit('status_update', {'devices': devices})
+def check_status_and_notify_sync():
+    global devices
+    
+    if not devices:
+        fetch_devices_from_api()
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        if offDevices:
-            fallDevices = []
-            for item in offDevices:
-                fallDevices.append(item['name'])
-                fallDevices.append(item['ip'])
-            subject = f"⚠️ Dispositivo/s CAÍDO/S"
-            body = '\n '.join(fallDevices)
-            send_email_notification(subject, body)  
-            offDevices.clear()
+    new_statuses = loop.run_until_complete(
+        asyncio.gather(*[ping_device_async(device) for device in devices])
+    )
+    
+    off_devices_for_email = []
+    
+    for i, new_status in enumerate(new_statuses):
+        devices[i]['status'] = new_status
+        if new_status == "Activo":
+            devices[i]['active'] = "Encontrado" 
 
-        socketio.emit('status_update', {'devices': devices})
-        print("Estados actualizados y enviados via WebSocket.")
-        time.sleep(30)  
+        if new_status == "Caido" and devices[i]['active'] == "Perdido/s":
+            devices[i]['down_count'] += 1
+            print(devices[i]["name"], "count_down", devices[i]["down_count"])
+        else:
+            devices[i]['down_count'] = 0
+        
+        if devices[i]['down_count'] == 8:
+            off_devices_for_email.append(devices[i])
+            devices[i]['down_count'] = 0
 
+    socketio.start_background_task(target=lambda: socketio.emit('status_update', {'devices': devices}))
+    
+    if off_devices_for_email:
+        fallDevices = [f"{item['name']} ({item['ip']})" for item in off_devices_for_email]
+        subject = f"⚠️ Dispositivo/s CAÍDO/S"
+        body = 'Dispositivos confirmados como caídos:\n\n' + f'\n {datetime.now()}\n\n'.join(fallDevices)
+        send_email_notification(subject, body) 
+        print("Notificación de caída enviada.")
+        for device in off_devices_for_email:
+            device['down_count'] = 0
 
 @app.route('/')
 def index():
-    return devices
+    return jsonify(devices)
+
 @socketio.on('connect')
 def handle_connect():
-    print('Cliente conectado:', request.sid)
     if devices:
         emit('status_update', {'devices': devices}, room=request.sid)
 
 if __name__ == '__main__':
     gmail_service = get_gmail_service()
-    fetch_devices_from_api()  
-    threading.Thread(target=check_status_and_notify, daemon=True).start()
+    fetch_devices_from_api()
+    
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(func=check_status_and_notify_sync, trigger="interval", seconds=30 )
+    scheduler.start()
+    
     socketio.run(app, debug=True, port=5000)
