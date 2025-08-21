@@ -92,7 +92,7 @@ def fetch_devices_from_api():
         devices = [{
             "name": item.get('name'),
             "ip": item.get('ip'),
-            "status": "Caido",
+            "status": "Desconocido",
             "active": "Perdido/s",
             "down_count": 0  
         } for item in data]
@@ -113,9 +113,9 @@ async def ping_device_async(device):
             text=True, 
             timeout=3
         )
-        return "Activo" if result.returncode == 0 else "Caido"
+        return "Activo" if result.returncode == 0 else "Desconocido"
     except (subprocess.TimeoutExpired, Exception):
-        return "Caido"
+        return "Desconocido"
 
 def check_status_and_notify_sync():
     global devices
@@ -139,8 +139,11 @@ def check_status_and_notify_sync():
         devices[i]['status'] = new_status
         if new_status == "Activo":
             devices[i]['active'] = "Encontrado" 
+        if devices[i]["active"] == "Encontrado" and new_status != "Activo": 
+            devices[i]["status"] = "Caido"
 
-        if new_status == "Caido" and devices[i]['active'] == "Perdido/s":
+
+        if new_status == "Caido" and devices[i]['active'] == "Encontrado":
             devices[i]['down_count'] += 1
             print(devices[i]["name"], "count_down", devices[i]["down_count"])
         else:
